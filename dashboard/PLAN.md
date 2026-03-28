@@ -140,14 +140,14 @@ dashboard/
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  [필터 바] 기간 선택 | 서비스 선택 | 모델 선택              │
+│  [필터 바] 기간 선택 | 시간 단위(연/월/주/일/시) | 서비스 | 모델 │
 ├──────────┬──────────┬──────────┬──────────┬─────────────────┤
 │ KPI 카드 │ KPI 카드 │ KPI 카드 │ KPI 카드 │ KPI 카드        │
 │ 총 요청수│ 평균응답 │ 총 Token │ 코드적용 │ 활성사용자      │
 │          │ 시간     │ 사용량   │ 라인수   │                 │
 ├──────────┴──────────┴──────────┴──────────┴─────────────────┤
 │  [요청 수 추이 차트]              │  [서비스별 요청 비율]    │
-│  Line Chart (일별/주별/월별)      │  Pie/Donut Chart        │
+│  Line Chart (연/월/주/일/시 전환) │  Pie/Donut Chart        │
 ├───────────────────────────────────┼─────────────────────────┤
 │  [모델별 Token 사용량]            │  [응답 시간 분포]       │
 │  Stacked Bar Chart                │  Box Plot / Histogram   │
@@ -266,30 +266,61 @@ type ServiceType = 'code-mate' | 'code-pearl' | 'code-search';
 type CodeMateToolType = 'continue' | 'roo-code' | 'open-code';
 type ModelType = 'glm-4.7' | 'qwen-3.5';
 
+// 시계열 데이터 시간 단위 (Granularity)
+type TimeGranularity = 'year' | 'month' | 'week' | 'day' | 'hour';
+
+interface TimeSeriesQuery {
+  from: string;               // ISO datetime (예: '2026-01-01T00:00:00Z')
+  to: string;                 // ISO datetime
+  granularity: TimeGranularity; // 집계 단위
+}
+
+// 시계열 데이터 포인트 (모든 시계열 차트에서 공통 사용)
+interface TimeSeriesPoint {
+  timestamp: string;          // granularity에 따라 달라짐
+                              //   year:  '2026'
+                              //   month: '2026-03'
+                              //   week:  '2026-W13'
+                              //   day:   '2026-03-28'
+                              //   hour:  '2026-03-28T14'
+  value: number;
+}
+
 interface RequestMetrics {
   service: ServiceType;
   tool?: CodeMateToolType;    // Code Mate 하위 도구
   model: ModelType;
-  date: string;               // ISO date
-  requestCount: number;
+  granularity: TimeGranularity; // 집계 시간 단위
+  period: { from: string; to: string };
+  timeSeries: TimeSeriesPoint[];  // 시간 단위별 요청 수 추이
+  requestCount: number;       // 기간 내 총 요청 수
   responseTime: {
     avg: number;
     p50: number;
     p95: number;
     p99: number;
+    timeSeries: TimeSeriesPoint[];  // 시간 단위별 평균 응답 시간 추이
   };
   tokens: {
     input: number;
     output: number;
     cacheHit: number;
+    timeSeries: {               // 시간 단위별 토큰 사용 추이
+      timestamp: string;
+      input: number;
+      output: number;
+      cacheHit: number;
+    }[];
   };
 }
 
 interface CodeMetrics {
   service: ServiceType;
   tool?: CodeMateToolType;
-  date: string;
-  appliedLines: number;       // 코드 적용 라인 수
+  granularity: TimeGranularity;
+  period: { from: string; to: string };
+  appliedLines: number;       // 기간 내 총 코드 적용 라인 수
+  timeSeries: TimeSeriesPoint[];  // 시간 단위별 코드 적용 라인 추이
 }
 ```
 
@@ -328,13 +359,22 @@ interface SystemOverview {
 |--------|----------|------|
 | GET | `/api/users/population` | 사용자 모수 조회 |
 | GET | `/api/users?dept=&jobGroup=&isDev=` | 사용자 목록 (필터) |
-| GET | `/api/metrics/requests?service=&model=&from=&to=` | 요청 지표 조회 |
-| GET | `/api/metrics/tokens?service=&model=&from=&to=` | 토큰 사용량 조회 |
-| GET | `/api/metrics/response-time?service=&model=&from=&to=` | 응답 시간 조회 |
-| GET | `/api/metrics/code-lines?service=&from=&to=` | 코드 적용 라인 조회 |
+| GET | `/api/metrics/requests?service=&model=&from=&to=&granularity=` | 요청 지표 조회 (시간 단위 지정) |
+| GET | `/api/metrics/tokens?service=&model=&from=&to=&granularity=` | 토큰 사용량 조회 (시간 단위 지정) |
+| GET | `/api/metrics/response-time?service=&model=&from=&to=&granularity=` | 응답 시간 조회 (시간 단위 지정) |
+| GET | `/api/metrics/code-lines?service=&from=&to=&granularity=` | 코드 적용 라인 조회 (시간 단위 지정) |
 | GET | `/api/system/gpus` | GPU 현황 조회 |
 | GET | `/api/system/model-service-mapping` | 모델-서비스 연결 현황 |
-| GET | `/api/metrics/overview` | 대시보드 요약 KPI |
+| GET | `/api/metrics/overview?from=&to=&granularity=` | 대시보드 요약 KPI (시간 단위 지정) |
+
+> **granularity 파라미터**: `year` | `month` | `week` | `day` | `hour`
+> - 기본값: `day`
+> - 기간과 granularity 관계 예시:
+>   - 오늘 → `hour` (24개 데이터 포인트)
+>   - 최근 7일 → `day` (7개) 또는 `hour` (168개)
+>   - 최근 30일 → `day` (30개) 또는 `week` (4~5개)
+>   - 최근 1년 → `month` (12개) 또는 `week` (52개)
+>   - 전체 기간 → `year` 또는 `month`
 
 ---
 
@@ -386,12 +426,24 @@ interface SystemOverview {
 
 | 필터 | 옵션 |
 |------|------|
-| **기간** | 오늘, 최근 7일, 최근 30일, 커스텀 범위 |
+| **기간** | 오늘, 최근 7일, 최근 30일, 최근 1년, 커스텀 범위 |
+| **시간 단위** | 연(year), 월(month), 주(week), 일(day), 시간(hour) |
 | **서비스** | 전체, Code Mate, Code Pearl, Code Search |
 | **Code Mate 도구** | 전체, Continue, Roo Code, OpenCode |
 | **모델** | 전체, GLM 4.7, Qwen 3.5 |
 | **소속** | 전체, 부서 선택 |
 | **직군** | 전체, S직군 등 |
+
+> **시간 단위 자동 추천 로직**: 선택한 기간에 따라 적절한 기본 시간 단위를 자동 설정합니다.
+> | 기간 | 기본 시간 단위 | 선택 가능 단위 |
+> |------|---------------|---------------|
+> | 오늘 | hour | hour |
+> | 최근 7일 | day | hour, day |
+> | 최근 30일 | day | hour, day, week |
+> | 최근 1년 | month | day, week, month |
+> | 커스텀 (≤1일) | hour | hour |
+> | 커스텀 (≤90일) | day | hour, day, week, month |
+> | 커스텀 (>90일) | month | week, month, year |
 
 ---
 
